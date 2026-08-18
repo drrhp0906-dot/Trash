@@ -1,0 +1,1476 @@
+<!--
+  MedRev Dashboard — index.html
+  hand-rolled over a few weekends. no build step, no framework, no apologies.
+  if you're reading this and thinking "this could be cleaner" — yes, it could.
+  send a PR.  ~v
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MedRev Dashboard — Second MBBS Revision Hub</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+
+    // tailwind config — kept tiny, only what we actually override
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            // brand palette stolen from a figma file, dont ask which
+            brand: { 50:'#eff6ff',100:'#dbeafe',200:'#bfdbfe',300:'#93c5fd',
+                     400:'#60a5fa',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',
+                     800:'#1e40af',900:'#1e3a8a' },
+            accent: { 500:'#10b981', 600:'#059669', 700:'#047857' }
+          },
+          fontFamily: {
+            sans: ['Inter','system-ui','sans-serif'],
+            mono: ['JetBrains Mono','Menlo','monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <script>
+    // bootstrap theme before paint so we dont get the white flash
+    (function(){
+      try {
+        var t = localStorage.getItem('medrev:theme');
+        if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.classList.add('dark');
+        }
+      } catch(e) { /* localStorage can throw in private mode, ignore */ }
+    })();
+  </script>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <!-- sanitise untrusted answer HTML before mount — see renderQuestionDetail -->
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+  <!-- inverted-index search — see search.worker.js -->
+  <script src="https://cdn.jsdelivr.net/npm/flexsearch@0.7.31/dist/flexsearch.bundle.min.js"></script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <style>
+    /* header height is driven by content; we snapshot it into a CSS var
+       on load + resize so the sidebar sticky offset stays correct even
+       when the mobile URL bar hides/shows. */
+    :root { --header-h: 57px; }
+    html, body { height: 100%; }
+    /* dvh = dynamic viewport height — tracks the visible area, not the
+       layout viewport, so the sidebar doesn't disappear behind the
+       mobile URL bar. Falls back to vh on older browsers. */
+    @supports (height: 100dvh) {
+      .h-screen-viewport { height: calc(100dvh - var(--header-h)); }
+    }
+    .h-screen-viewport-fallback { height: calc(100vh - var(--header-h)); }
+
+    .h-screen-viewport { height: calc(100dvh - var(--header-h)); }
+    .min-h-screen-viewport { min-height: calc(100dvh - var(--header-h)); }
+    .h-screen-viewport-fallback { height: calc(100vh - var(--header-h)); }
+    .min-h-screen-viewport-fallback { min-height: calc(100vh - var(--header-h)); }
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.4); border-radius: 3px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+    .answer-body h3 { font-size: 1.125rem; font-weight: 700; margin-top: 1rem; margin-bottom: 0.5rem; color: inherit; }
+    .answer-body h4 { font-size: 1rem; font-weight: 600; margin-top: 0.75rem; margin-bottom: 0.25rem; color: inherit; }
+    .answer-body p { margin-bottom: 0.6rem; line-height: 1.7; }
+    .answer-body ul, .answer-body ol { margin-left: 1.25rem; margin-bottom: 0.6rem; line-height: 1.7; }
+    .answer-body ul { list-style: disc; }
+    .answer-body ol { list-style: decimal; }
+    .answer-body li { margin-bottom: 0.25rem; }
+    .answer-body img { border-radius: 0.5rem; margin: 1rem 0; max-width: 100%; height: auto; border: 1px solid rgba(148,163,184,0.3); }
+    .answer-body table { margin: 1rem 0; }
+    .answer-body .mermaid { margin: 1.25rem 0; background: rgba(255,255,255,0.6); padding: 1rem; border-radius: 0.5rem; border: 1px solid rgba(148,163,184,0.3); }
+    .dark .answer-body .mermaid { background: rgba(15,23,42,0.6); }
+    .answer-body strong { font-weight: 700; }
+    .answer-body em { font-style: italic; }
+    @media print {
+      .no-print { display: none !important; }
+      .answer-card { box-shadow: none !important; border: none !important; }
+      body { background: white !important; color: black !important; }
+    }
+  </style>
+</head>
+
+<body class="bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-200 font-sans antialiased min-h-screen">
+
+  <header class="sticky top-0 z-40 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm">
+    <div class="flex items-center gap-3 px-3 sm:px-5 py-2.5">
+
+      <button id="sidebarToggle"
+              class="lg:hidden p-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
+              aria-label="Toggle sidebar">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+        </svg>
+      </button>
+
+      <div class="flex items-center gap-2 shrink-0">
+        <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-brand-500 to-accent-500 flex items-center justify-center text-white font-extrabold text-lg shadow-sm">
+          M
+        </div>
+        <div class="hidden sm:block leading-tight">
+          <h1 class="text-base font-bold tracking-tight">MedRev Dashboard</h1>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400">Second MBBS • 379 Questions • 3 Subjects</p>
+        </div>
+      </div>
+
+      <div class="flex-1 max-w-2xl mx-auto relative">
+        <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 10a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        <input id="globalSearch"
+               type="search"
+               role="searchbox"
+               aria-label="Search questions"
+               aria-controls="searchResultsCount"
+               aria-expanded="false"
+               aria-autocomplete="list"
+               placeholder="Search 379 questions… e.g. amyloidosis, SLE, thrombosis, neoplasia"
+               class="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-slate-100 dark:bg-slate-800 border border-transparent focus:border-brand-400 focus:bg-white dark:focus:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-400/30 transition-colors">
+        <div id="searchResultsCount" role="status" aria-live="polite" aria-atomic="true"
+             class="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-slate-400 hidden"></div>
+      </div>
+
+      <div id="examCountdown" class="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gradient-to-r from-rose-500 to-orange-500 text-white shadow-sm text-xs font-semibold">
+
+      </div>
+
+      <button id="darkModeToggle"
+              class="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors"
+              aria-label="Toggle dark mode">
+        <svg class="w-5 h-5 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.36 6.36l-.71-.71M6.34 6.34l-.71-.71m12.02 0l-.71.71M6.34 17.66l-.71.71M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+        </svg>
+        <svg class="w-5 h-5 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+        </svg>
+      </button>
+    </div>
+
+    <div id="examCountdownMobile" class="md:hidden px-3 pb-2"></div>
+  </header>
+
+  <div class="flex relative">
+
+    <div id="sidebarOverlay" class="fixed inset-0 bg-black/50 z-30 hidden lg:hidden"></div>
+
+    <aside id="sidebar" role="navigation" aria-label="Question bank navigation"
+           class="fixed lg:sticky top-[var(--header-h)] lg:top-[var(--header-h)] lg:self-start z-30 lg:z-auto
+                  h-screen-viewport h-screen-viewport-fallback w-72 shrink-0
+                  bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800
+                  transform -translate-x-full lg:translate-x-0 transition-transform duration-200
+                  overflow-y-auto scrollbar-thin">
+
+      <nav class="p-3 space-y-1" role="tree" aria-label="Subjects, papers, and questions">
+
+        <button data-view="stats"
+                class="nav-top w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+          </svg>
+          Stats &amp; Revision Dashboard
+        </button>
+
+        <button data-view="quests"
+                class="nav-top w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          Syllabus Quests
+        </button>
+
+        <button data-view="all-questions"
+                class="nav-top w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+          </svg>
+          All Questions
+        </button>
+
+        <div class="my-3 border-t border-slate-200 dark:border-slate-800"></div>
+
+        <div id="sidebarTree" class="space-y-1"></div>
+      </nav>
+    </aside>
+
+    <main class="flex-1 min-w-0 min-h-screen-viewport min-h-screen-viewport-fallback">
+      <div id="mainContent" class="p-4 sm:p-6 max-w-5xl mx-auto"></div>
+    </main>
+  </div>
+
+  <script>
+
+    // ─── data layer ────────────────────────────────────────────────
+    // questions used to be hardcoded inline (~3MB of HTML strings). they now
+    // live in data/questions.json and are fetched lazily on first paint.
+    // repeat visits hit the browser HTTP cache — typically <50ms.
+    var medicalQuestionsData = null;
+    var syllabusQuestData = null;
+    var _dataReady = false;
+    var _dataPromise = null;
+
+    function loadData(){
+      if (_dataPromise) return _dataPromise;
+      _dataPromise = fetch('data/questions.json', { cache: 'default' })
+        .then(function(r){
+          if (!r.ok) throw new Error('HTTP '+r.status+' loading questions.json');
+          return r.json();
+        })
+        .then(function(payload){
+          medicalQuestionsData = payload.questions;
+          syllabusQuestData    = payload.syllabus;
+          _dataReady = true;
+          // build the flat index + seed the search worker
+          buildFlatQuestions();
+          initSearchWorker();
+        })
+        .catch(function(err){
+          console.error('[medrev] data load failed:', err);
+          var main = document.getElementById('mainContent');
+          if (main) {
+            main.innerHTML = '<div class="p-8 text-center text-slate-600 dark:text-slate-300">'
+              + '<div class="text-4xl mb-3">⚠️</div>'
+              + '<p class="font-medium">Could not load question data.</p>'
+              + '<p class="text-sm mt-1 text-slate-500">Check that <code>data/questions.json</code> is present next to <code>index.html</code>.</p>'
+              + '<p class="text-xs mt-2 text-slate-400">' + escapeHtml(err.message) + '</p>'
+              + '</div>';
+          }
+          throw err;
+        });
+      return _dataPromise;
+    }
+
+    // ─── search worker ─────────────────────────────────────────────
+    // we delegate search to a Web Worker so 379 * 5KB answer scans don't
+    // block the main thread on low-end mobile. the worker builds a
+    // FlexSearch inverted index on first message, then answers queries.
+    var searchWorker = null;
+    var searchCallback = null;
+
+    function initSearchWorker(){
+      if (searchWorker) return;
+      try {
+        searchWorker = new Worker('search.worker.js');
+        searchWorker.onmessage = function(e){
+          var msg = e.data;
+          if (msg.type === 'ready') {
+            console.log('[medrev] search worker ready, indexed', msg.count, 'docs');
+          } else if (msg.type === 'results') {
+            if (searchCallback) {
+              searchCallback(msg.ids, msg.query, msg.tookMs);
+              searchCallback = null;
+            }
+          }
+        };
+        searchWorker.postMessage({
+          type: 'index',
+          docs: flatQuestions.map(function(q){
+            return { id: q.id, q: q.question, s: q.subject, p: q.paper, sec: q.section, a: q.answer };
+          })
+        });
+      } catch(e){
+        console.warn('[medrev] search worker failed to start, falling back to main-thread search:', e);
+        searchWorker = null;
+      }
+    }
+
+    function searchQuestions(query, cb){
+      if (!query || !query.trim()) { cb([], query, 0); return; }
+      if (searchWorker) {
+        searchCallback = cb;
+        searchWorker.postMessage({ type: 'search', query: query });
+      } else {
+        // fallback: main-thread linear scan (same as before)
+        var q = query.toLowerCase();
+        var t0 = performance.now();
+        var matches = flatQuestions.filter(function(item){
+          return item.question.toLowerCase().indexOf(q) !== -1
+              || item.subject.toLowerCase().indexOf(q) !== -1
+              || item.paper.toLowerCase().indexOf(q) !== -1
+              || item.section.toLowerCase().indexOf(q) !== -1
+              || item.answer.toLowerCase().indexOf(q) !== -1;
+        });
+        cb(matches.map(function(m){ return m.id; }), query, performance.now() - t0);
+      }
+    }
+
+    // ─── Intersection Observer for lazy Mermaid + image rendering ──
+    // we observe every .mermaid block and every img[data-src] inside the
+    // answer body. the diagram/image only renders when it scrolls into view,
+    // so a 30-diagram answer costs nothing until the user reaches it.
+    var _mermaidObserver = null;
+    var _imageObserver = null;
+
+    function setupObservers(){
+      if (_mermaidObserver) return;
+      _mermaidObserver = new IntersectionObserver(function(entries){
+        entries.forEach(function(entry){
+          if (!entry.isIntersecting) return;
+          var el = entry.target;
+          _mermaidObserver.unobserve(el);
+          try {
+            if (window.mermaid) {
+              mermaid.initialize({ startOnLoad:false, theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default', securityLevel:'loose' });
+              mermaid.run({ nodes: [el] });
+            }
+          } catch(e) { console.warn('mermaid lazy render failed:', e); }
+        });
+      }, { rootMargin: '200px 0px' });
+
+      _imageObserver = new IntersectionObserver(function(entries){
+        entries.forEach(function(entry){
+          if (!entry.isIntersecting) return;
+          var img = entry.target;
+          _imageObserver.unobserve(img);
+          if (img.dataset.src) {
+            img.src = img.dataset.src;
+            img.removeAttribute('data-src');
+          }
+        });
+      }, { rootMargin: '300px 0px' });
+    }
+
+    function observeLazyContent(root){
+      if (!_mermaidObserver) setupObservers();
+      // mermaid blocks
+      var mNodes = root.querySelectorAll('.mermaid:not([data-mermaid-rendered])');
+      mNodes.forEach(function(n){
+        n.setAttribute('data-mermaid-rendered', '1');
+        _mermaidObserver.observe(n);
+      });
+      // images: convert <img src="images/..."> to <img data-src="images/..." loading="lazy">
+      // so they only fetch when scrolled into view. (we leave loading="lazy" on
+      // for browsers that support it natively — belt and suspenders.)
+      var imgs = root.querySelectorAll('img:not([data-lazy-patched])');
+      imgs.forEach(function(img){
+        img.setAttribute('data-lazy-patched', '1');
+        img.setAttribute('loading', 'lazy');
+        img.setAttribute('decoding', 'async');
+        // we keep the original src — native lazy loading is enough on modern
+        // browsers, and we only kick in the IO fallback for older ones.
+        _imageObserver.observe(img);
+      });
+    }
+
+    // sanitise untrusted answer HTML before mounting. DOMPurify strips
+    // <script>, on* handlers, javascript: URLs, etc. we allow class/style
+    // because the answer HTML uses tailwind utility classes for layout.
+    function sanitiseAnswerHTML(html){
+      if (typeof DOMPurify === 'undefined') {
+        console.warn('[medrev] DOMPurify not loaded — mounting unsanitised HTML');
+        return html;
+      }
+      return DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: ['h3','h4','h5','p','ul','ol','li','table','thead','tbody','tr','td','th',
+                       'strong','em','u','b','i','br','hr','figure','figcaption','img','span','div',
+                       'blockquote','code','pre','a','sub','sup'],
+        ALLOWED_ATTR: ['class','style','src','alt','href','title','colspan','rowspan','target','rel','loading','decoding'],
+        ALLOW_DATA_ATTR: false
+      });
+    }
+
+    // flat question index builder — pulled out of inline execution so we
+    // can rebuild it after async data load.
+    var flatQuestions = [];
+    var TOTAL_QUESTIONS = 0;
+    function buildFlatQuestions(){
+      flatQuestions = [];
+      if (!medicalQuestionsData) return;
+      medicalQuestionsData.forEach(function(subj, si){
+        subj.papers.forEach(function(paper, pi){
+          paper.sections.forEach(function(sec, sci){
+            sec.questions.forEach(function(q, qi){
+              flatQuestions.push(Object.assign({}, q, {
+                subjectIdx: si, paperIdx: pi, sectionIdx: sci, qIdx: qi
+              }));
+            });
+          });
+        });
+      });
+      TOTAL_QUESTIONS = flatQuestions.length;  // should be 379
+    }
+    const EXAM_SCHEDULE = [
+  {
+    "date": "2026-09-07T09:30:00",
+    "subject": "Pharmacology",
+    "paper": "Paper-1"
+  },
+  {
+    "date": "2026-09-09T09:30:00",
+    "subject": "Pharmacology",
+    "paper": "Paper-2"
+  },
+  {
+    "date": "2026-09-11T09:30:00",
+    "subject": "Pathology",
+    "paper": "Paper-1"
+  },
+  {
+    "date": "2026-09-14T09:30:00",
+    "subject": "Pathology",
+    "paper": "Paper-2"
+  },
+  {
+    "date": "2026-09-16T09:30:00",
+    "subject": "Microbiology",
+    "paper": "Paper-1"
+  },
+  {
+    "date": "2026-09-18T09:30:00",
+    "subject": "Microbiology",
+    "paper": "Paper-2"
+  }
+];
+
+    // status states — keep names short, the UI pill picks up the colour
+    var STATUS = {
+      TODO: 'To-Do',
+      IN_PROGRESS: 'In Progress',
+      REVISED: 'Revised'
+    };
+    var STATUS_COLORS = {
+      'To-Do': 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200',
+      'In Progress': 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+      'Revised': 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+    };
+
+    // localStorage keys — namespaced so they don't collide with anything else
+    // on localhost. Don't rename without a migration.
+    var LS_KEYS = {
+      theme: 'medrev:theme',
+      qStatus: 'medrev:qStatus',
+      quests: 'medrev:quests',
+      dailyQuest: 'medrev:dailyQuest',
+      lastView: 'medrev:lastView'
+    };
+
+    function loadJSON(key, fallback){
+      try {
+        var raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch(e) {
+        console.warn('Failed to parse', key, e);
+        return fallback;
+      }
+    }
+    function saveJSON(key, val){
+      try { localStorage.setItem(key, JSON.stringify(val)); }
+      catch(e) { console.warn('Failed to write', key, e); }
+    }
+    function getQuestionStatus(qid){
+      var map = loadJSON(LS_KEYS.qStatus, {});
+      return map[qid] || STATUS.TODO;
+    }
+
+    function setQuestionStatus(qid, status){
+      var map = loadJSON(LS_KEYS.qStatus, {});
+      map[qid] = status;
+      saveJSON(LS_KEYS.qStatus, map);
+      // sidebar dots need a refresh — FIXME: this is a bit brute-force
+      refreshSidebarTreeStatusIndicators();
+    }
+
+    function getQuestDone(questId){
+      var map = loadJSON(LS_KEYS.quests, {});
+      return !!map[questId];
+    }
+
+    function setQuestDone(questId, done){
+      var map = loadJSON(LS_KEYS.quests, {});
+      map[questId] = done;
+      saveJSON(LS_KEYS.quests, map);
+    }
+
+    function getTodayDateString(){
+      var d = new Date();
+      var yyyy = d.getFullYear();
+      var mm = String(d.getMonth()+1).padStart(2,'0');
+      var dd = String(d.getDate()).padStart(2,'0');
+      return yyyy+'-'+mm+'-'+dd;
+    }
+
+    function calculateDailyTarget() {
+      const statusMap = loadJSON(LS_KEYS.qStatus, {});
+      const remaining = flatQuestions.filter(
+        q => (statusMap[q.id] || STATUS.TODO) !== STATUS.REVISED
+      ).length;
+
+      const firstExam = new Date(EXAM_SCHEDULE[0].date);
+      const now = new Date();
+      const msPerDay = 24 * 60 * 60 * 1000;
+      const remainingDays = Math.max(1, Math.ceil((firstExam - now) / msPerDay));
+
+      const dailyTarget = remaining > 0 ? Math.ceil(remaining / remainingDays) : 0;
+      return { remaining, remainingDays, dailyTarget };
+    }
+
+    function assignDailyQuest() {
+      const today = getTodayDateString();
+      const { dailyTarget } = calculateDailyTarget();
+      const statusMap = loadJSON(LS_KEYS.qStatus, {});
+
+      const unrevised = flatQuestions.filter(
+        q => (statusMap[q.id] || STATUS.TODO) !== STATUS.REVISED
+      );
+      const questionIds = unrevised.slice(0, dailyTarget).map(q => q.id);
+
+      const quest = {
+        date: today,
+        target: dailyTarget,
+        questionIds: questionIds
+      };
+      saveJSON(LS_KEYS.dailyQuest, quest);
+      return quest;
+    }
+
+    function getDailyQuest() {
+      const today = getTodayDateString();
+      const stored = loadJSON(LS_KEYS.dailyQuest, null);
+      if (stored && stored.date === today) return stored;
+      return assignDailyQuest();
+    }
+
+    function getQuestProgress() {
+      const quest = getDailyQuest();
+      if (!quest.questionIds.length) {
+        return { completed: 0, total: 0, pct: 100, isComplete: true };
+      }
+      const statusMap = loadJSON(LS_KEYS.qStatus, {});
+      const completed = quest.questionIds.filter(
+        qid => statusMap[qid] === STATUS.REVISED
+      ).length;
+      const total = quest.questionIds.length;
+      const pct = total ? Math.round((completed / total) * 100) : 100;
+      return { completed, total, pct, isComplete: completed >= total };
+    }
+
+    // (flatQuestions + TOTAL_QUESTIONS now built inside loadData() → buildFlatQuestions())
+
+    function pickNextExam(now){
+      var nowMs = now.getTime();
+      // TODO: exam duration is hardcoded at 3h — make this per-exam someday
+      for (var i=0; i<EXAM_SCHEDULE.length; i++) {
+        var ex = EXAM_SCHEDULE[i];
+        var start = new Date(ex.date).getTime();
+        var end = start + 3*60*60*1000;
+        if (nowMs < start) return Object.assign({}, ex, {start:start, end:end, state:'upcoming'});
+        if (nowMs >= start && nowMs < end) return Object.assign({}, ex, {start:start, end:end, state:'in-progress'});
+      }
+      return null;
+    }
+    function renderExamCountdown(){
+      var now = new Date();
+      var next = pickNextExam(now);
+      // both header + mobile row get the same markup
+      var targetEls = [document.getElementById('examCountdown'),
+                       document.getElementById('examCountdownMobile')];
+
+      if (!next) {
+        targetEls.forEach(el => el && (el.innerHTML =
+          `<span class="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold">All exams completed ✓</span>`));
+        return;
+      }
+
+      if (next.state === "in-progress") {
+        const html = `<span class="px-3 py-1.5 rounded-lg bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+          ${next.subject} ${next.paper} — Exam in Progress
+        </span>`;
+        targetEls.forEach(el => el && (el.innerHTML = html));
+        return;
+      }
+
+      const diff = next.start - now.getTime();
+      const d = Math.floor(diff / 86400000);
+      const h = Math.floor((diff % 86400000) / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+
+      const cell = (val, label) =>
+        `<div class="text-center px-1.5">
+           <div class="font-mono font-bold text-sm leading-none">${String(val).padStart(2,'0')}</div>
+           <div class="text-[9px] uppercase tracking-wide opacity-80">${label}</div>
+         </div>`;
+      const html = `
+        <div class="flex items-center gap-2">
+          <div class="text-[10px] leading-tight uppercase tracking-wide opacity-90">
+            Next Exam<br><span class="font-bold">${next.subject} ${next.paper}</span><br>
+            <span class="opacity-80 normal-case font-normal">${new Date(next.start).toLocaleDateString('en-IN', {day:'numeric',month:'short'})} • 9:30 AM</span>
+          </div>
+          <div class="flex items-center gap-1">
+            ${cell(d,'d')}${cell(h,'h')}${cell(m,'m')}${cell(s,'s')}
+          </div>
+        </div>`;
+      targetEls.forEach(el => el && (el.innerHTML = html));
+    }
+
+    function buildSidebarTree() {
+      const root = document.getElementById('sidebarTree');
+      const frag = document.createDocumentFragment();
+
+      medicalQuestionsData.forEach((subj, si) => {
+        const subjCount = subj.papers.reduce((acc, p) =>
+          acc + p.sections.reduce((a, s) => a + s.questions.length, 0), 0);
+
+        const subjEl = document.createElement('div');
+        subjEl.className = 'rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800';
+        subjEl.innerHTML = `
+          <button class="subj-toggle w-full flex items-center justify-between px-3 py-2 text-sm font-semibold
+                         bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
+                         text-slate-700 dark:text-slate-200 transition-colors"
+                  role="treeitem"
+                  aria-expanded="false"
+                  aria-controls="subj-${si}-children">
+            <span class="flex items-center gap-2">
+              <svg class="w-3 h-3 transition-transform chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+              </svg>
+              ${subj.subject}
+            </span>
+            <span class="text-[10px] font-mono text-slate-500 dark:text-slate-400">${subjCount}</span>
+          </button>
+          <div id="subj-${si}-children" class="subj-children hidden pl-2 border-l-2 border-slate-200 dark:border-slate-800 ml-2 mt-1 space-y-1" role="group">
+          </div>`;
+        const childrenWrap = subjEl.querySelector('.subj-children');
+        const subjToggle = subjEl.querySelector('.subj-toggle');
+        function toggleSubj(){
+          const willShow = childrenWrap.classList.contains('hidden');
+          childrenWrap.classList.toggle('hidden');
+          subjEl.querySelector('.chevron').classList.toggle('rotate-90');
+          subjToggle.setAttribute('aria-expanded', willShow ? 'true' : 'false');
+        }
+        subjToggle.addEventListener('click', toggleSubj);
+        subjToggle.addEventListener('keydown', function(e){
+          // arrow-key tree nav per WAI-ARIA authoring practices
+          if (e.key === 'ArrowRight' && childrenWrap.classList.contains('hidden')) { toggleSubj(); e.preventDefault(); }
+          else if (e.key === 'ArrowLeft' && !childrenWrap.classList.contains('hidden')) { toggleSubj(); e.preventDefault(); }
+          else if (e.key === 'Enter' || e.key === ' ') { toggleSubj(); e.preventDefault(); }
+        });
+
+        subj.papers.forEach((paper, pi) => {
+          const paperCount = paper.sections.reduce((a, s) => a + s.questions.length, 0);
+          const paperEl = document.createElement('div');
+          paperEl.className = 'rounded-md overflow-hidden';
+          paperEl.innerHTML = `
+            <button class="paper-toggle w-full flex items-center justify-between px-2.5 py-1.5 text-xs font-medium
+                           hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-600 dark:text-slate-300"
+                    role="treeitem"
+                    aria-expanded="false"
+                    aria-controls="paper-${si}-${pi}-children">
+              <span class="flex items-center gap-1.5">
+                <svg class="w-3 h-3 transition-transform chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+                ${paper.paper} <span class="text-[10px] text-slate-400">(${paper.category})</span>
+              </span>
+              <span class="text-[10px] font-mono text-slate-400">${paperCount}</span>
+            </button>
+            <div id="paper-${si}-${pi}-children" class="paper-children hidden pl-2 ml-2 border-l border-slate-200 dark:border-slate-800 space-y-1" role="group">
+            </div>`;
+          const paperKids = paperEl.querySelector('.paper-children');
+          const paperToggle = paperEl.querySelector('.paper-toggle');
+          function togglePaper(){
+            const willShow = paperKids.classList.contains('hidden');
+            paperKids.classList.toggle('hidden');
+            paperEl.querySelector('.chevron').classList.toggle('rotate-90');
+            paperToggle.setAttribute('aria-expanded', willShow ? 'true' : 'false');
+          }
+          paperToggle.addEventListener('click', togglePaper);
+          paperToggle.addEventListener('keydown', function(e){
+            if (e.key === 'ArrowRight' && paperKids.classList.contains('hidden')) { togglePaper(); e.preventDefault(); }
+            else if (e.key === 'ArrowLeft' && !paperKids.classList.contains('hidden')) { togglePaper(); e.preventDefault(); }
+            else if (e.key === 'Enter' || e.key === ' ') { togglePaper(); e.preventDefault(); }
+          });
+
+          paper.sections.forEach((sec, sci) => {
+            const secEl = document.createElement('div');
+            secEl.className = 'rounded-md overflow-hidden';
+            secEl.innerHTML = `
+              <button class="sec-toggle w-full flex items-center justify-between px-2 py-1 text-[11px] font-medium
+                             hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 dark:text-slate-400"
+                      role="treeitem"
+                      aria-expanded="false"
+                      aria-controls="sec-${si}-${pi}-${sci}-children">
+                <span class="flex items-center gap-1.5">
+                  <svg class="w-2.5 h-2.5 transition-transform chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                  </svg>
+                  ${sec.section}
+                </span>
+                <span class="text-[10px] font-mono text-slate-400">${sec.questions.length}</span>
+              </button>
+              <div id="sec-${si}-${pi}-${sci}-children" class="sec-children hidden pl-2 ml-2 mt-0.5 space-y-0.5" role="group">
+              </div>`;
+            const secKids = secEl.querySelector('.sec-children');
+            const secToggle = secEl.querySelector('.sec-toggle');
+            function toggleSec(){
+              const willShow = secKids.classList.contains('hidden');
+              secKids.classList.toggle('hidden');
+              secEl.querySelector('.chevron').classList.toggle('rotate-90');
+              secToggle.setAttribute('aria-expanded', willShow ? 'true' : 'false');
+            }
+            secToggle.addEventListener('click', toggleSec);
+            secToggle.addEventListener('keydown', function(e){
+              if (e.key === 'ArrowRight' && secKids.classList.contains('hidden')) { toggleSec(); e.preventDefault(); }
+              else if (e.key === 'ArrowLeft' && !secKids.classList.contains('hidden')) { toggleSec(); e.preventDefault(); }
+              else if (e.key === 'Enter' || e.key === ' ') { toggleSec(); e.preventDefault(); }
+            });
+
+            sec.questions.forEach((q, qi) => {
+              const status = getQuestionStatus(q.id);
+              const qEl = document.createElement('button');
+              qEl.className = 'q-link w-full text-left flex items-start gap-1.5 px-2 py-1 text-[11px] leading-snug rounded hover:bg-brand-50 dark:hover:bg-brand-900/30 text-slate-600 dark:text-slate-300';
+              qEl.setAttribute('role', 'treeitem');
+              qEl.setAttribute('aria-label', qi+1 + '. ' + q.question.replace(/\s+/g, ' ').trim() + ' (' + status + ')');
+              qEl.innerHTML = `
+                <span class="mt-0.5 w-1.5 h-1.5 rounded-full shrink-0 ${status === 'Revised' ? 'bg-emerald-500' : status === 'In Progress' ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-600'}" aria-hidden="true"></span>
+                <span class="line-clamp-2">${qi+1}. ${escapeHtml(q.question)}</span>`;
+              qEl.addEventListener('click', () => {
+                renderQuestionDetail(q);
+
+                if (window.innerWidth < 1024) closeSidebar();
+              });
+              secKids.appendChild(qEl);
+            });
+
+            paperKids.appendChild(secEl);
+          });
+          childrenWrap.appendChild(paperEl);
+        });
+        frag.appendChild(subjEl);
+      });
+      root.appendChild(frag);
+    }
+
+    function renderStatsView() {
+      const main = document.getElementById('mainContent');
+      const statusMap = loadJSON(LS_KEYS.qStatus, {});
+
+      let revised = 0, inProg = 0, todo = 0;
+      flatQuestions.forEach(q => {
+        const s = statusMap[q.id] || STATUS.TODO;
+        if (s === STATUS.REVISED) revised++;
+        else if (s === STATUS.IN_PROGRESS) inProg++;
+        else todo++;
+      });
+      const pctOverall = TOTAL_QUESTIONS ? Math.round((revised / TOTAL_QUESTIONS) * 100) : 0;
+
+      const subjStats = medicalQuestionsData.map(subj => {
+        let sTotal = 0, sRevised = 0, sInProg = 0;
+        subj.papers.forEach(p => p.sections.forEach(s => s.questions.forEach(q => {
+          sTotal++;
+          const st = statusMap[q.id] || STATUS.TODO;
+          if (st === STATUS.REVISED) sRevised++;
+          else if (st === STATUS.IN_PROGRESS) sInProg++;
+        })));
+        return {
+          subject: subj.subject,
+          total: sTotal,
+          revised: sRevised,
+          inProgress: sInProg,
+          pct: sTotal ? Math.round((sRevised / sTotal) * 100) : 0
+        };
+      });
+
+      let qTotal = 0, qDone = 0;
+      syllabusQuestData.forEach(subj => subj.papers.forEach(p => {
+        p.topics.forEach((t, ti) => {
+          qTotal++;
+          if (getQuestDone(`quest_${subj.subject}_${p.paper}_${ti}`)) qDone++;
+        });
+      }));
+      const qPct = qTotal ? Math.round((qDone / qTotal) * 100) : 0;
+
+      const next = pickNextExam(new Date());
+
+      const subjColor = {
+        "Pathology":     "from-rose-500 to-pink-600",
+        "Microbiology":  "from-emerald-500 to-teal-600",
+        "Pharmacology":  "from-brand-500 to-indigo-600"
+      };
+
+      main.innerHTML = `
+        <div class="space-y-6">
+
+          ${renderDailyQuestCard()}
+
+          <!-- Hero -->
+          <div class="rounded-2xl p-6 bg-gradient-to-br from-brand-600 via-brand-700 to-indigo-800 text-white shadow-lg relative overflow-hidden">
+            <div class="absolute -right-8 -top-8 w-40 h-40 rounded-full bg-white/10 blur-xl"></div>
+            <div class="absolute -right-4 bottom-0 w-24 h-24 rounded-full bg-accent-500/30 blur-xl"></div>
+            <div class="relative">
+              <p class="text-xs uppercase tracking-widest opacity-80 font-medium">Second MBBS Revision Hub</p>
+              <h2 class="text-2xl sm:text-3xl font-extrabold mt-1">Welcome back, future doctor 👨‍⚕️</h2>
+              <p class="opacity-90 mt-2 max-w-2xl text-sm leading-relaxed">
+                Your one-stop dashboard for Pathology, Microbiology &amp; Pharmacology — ${TOTAL_QUESTIONS} exam questions,
+                syllabus quest tracker, live exam countdown, and dark mode. Everything saves locally in your browser.
+              </p>
+              <div class="mt-4 flex flex-wrap gap-2">
+                <button data-view="all-questions" class="nav-top bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-lg text-xs font-semibold backdrop-blur-sm transition-colors">Browse all ${TOTAL_QUESTIONS} questions →</button>
+                <button data-view="quests" class="nav-top bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-lg text-xs font-semibold backdrop-blur-sm transition-colors">View Syllabus Quests →</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Top stat tiles -->
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="rounded-xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+              <div class="text-3xl font-extrabold text-brand-600 dark:text-brand-400">${TOTAL_QUESTIONS}</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400 mt-1">Total Questions</div>
+            </div>
+            <div class="rounded-xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+              <div class="text-3xl font-extrabold text-emerald-600 dark:text-emerald-400">${revised}</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400 mt-1">Revised (${pctOverall}%)</div>
+            </div>
+            <div class="rounded-xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+              <div class="text-3xl font-extrabold text-amber-600 dark:text-amber-400">${inProg}</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400 mt-1">In Progress</div>
+            </div>
+            <div class="rounded-xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+              <div class="text-3xl font-extrabold text-rose-600 dark:text-rose-400">${qPct}%</div>
+              <div class="text-xs text-slate-500 dark:text-slate-400 mt-1">Syllabus Quests Done</div>
+            </div>
+          </div>
+
+          <!-- Overall progress bar -->
+          <div class="rounded-xl p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">Overall Revision Progress</h3>
+              <span class="text-xs font-mono text-slate-500 dark:text-slate-400">${revised} / ${TOTAL_QUESTIONS}  •  ${pctOverall}%</span>
+            </div>
+            <div class="h-3 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div class="h-full bg-gradient-to-r from-brand-500 to-accent-500 transition-all duration-700" style="width:${pctOverall}%"></div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 mt-3 text-[11px] text-center">
+              <div class="rounded p-2 bg-slate-100 dark:bg-slate-800">
+                <div class="font-bold text-slate-700 dark:text-slate-200">${todo}</div>
+                <div class="text-slate-500 dark:text-slate-400">To-Do</div>
+              </div>
+              <div class="rounded p-2 bg-amber-50 dark:bg-amber-900/20">
+                <div class="font-bold text-amber-700 dark:text-amber-300">${inProg}</div>
+                <div class="text-slate-500 dark:text-slate-400">In Progress</div>
+              </div>
+              <div class="rounded p-2 bg-emerald-50 dark:bg-emerald-900/20">
+                <div class="font-bold text-emerald-700 dark:text-emerald-300">${revised}</div>
+                <div class="text-slate-500 dark:text-slate-400">Revised</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Subject-wise breakdown -->
+          <div>
+            <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Subject-wise Breakdown</h3>
+            <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              ${subjStats.map(s => `
+                <div class="rounded-xl overflow-hidden shadow-sm border border-slate-200 dark:border-slate-800">
+                  <div class="bg-gradient-to-r ${subjColor[s.subject] || 'from-slate-500 to-slate-700'} text-white px-4 py-2.5">
+                    <div class="flex items-center justify-between">
+                      <span class="font-semibold text-sm">${s.subject}</span>
+                      <span class="text-xs opacity-80">${s.revised}/${s.total}</span>
+                    </div>
+                  </div>
+                  <div class="p-4 bg-white dark:bg-slate-900">
+                    <div class="h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden mb-2">
+                      <div class="h-full bg-gradient-to-r ${subjColor[s.subject] || 'from-slate-500 to-slate-700'} transition-all duration-700" style="width:${s.pct}%"></div>
+                    </div>
+                    <div class="flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                      <span>📊 ${s.pct}% revised</span>
+                      <span>🚧 ${s.inProgress} in progress</span>
+                    </div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Upcoming exam focus -->
+          ${next ? `
+          <div class="rounded-xl p-5 bg-gradient-to-br from-rose-50 to-orange-50 dark:from-rose-900/20 dark:to-orange-900/20 border border-rose-200 dark:border-rose-800/50 shadow-sm">
+            <div class="flex items-start gap-3">
+              <div class="w-10 h-10 rounded-lg bg-rose-500 text-white flex items-center justify-center text-xl shrink-0">⏰</div>
+              <div class="flex-1">
+                <h3 class="text-sm font-bold text-rose-900 dark:text-rose-200">Upcoming Exam Focus</h3>
+                <p class="text-sm text-rose-800 dark:text-rose-300 mt-1">
+                  ${next.state === 'in-progress'
+                    ? `Exam in progress right now: <strong>${next.subject} ${next.paper}</strong>`
+                    : `Next exam: <strong>${next.subject} ${next.paper}</strong> on <strong>${new Date(next.start).toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</strong> at 9:30 AM`}
+                </p>
+                <button data-view="all-questions"
+                        class="nav-top mt-3 inline-flex items-center gap-1.5 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5 rounded-lg transition-colors">
+                  Revise ${next.subject} questions →
+                </button>
+              </div>
+            </div>
+          </div>` : ''}
+
+          <!-- Syllabus quest summary -->
+          <div class="rounded-xl p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">Syllabus Quest Progress</h3>
+              <span class="text-xs font-mono text-slate-500 dark:text-slate-400">${qDone} / ${qTotal}  •  ${qPct}%</span>
+            </div>
+            <div class="h-3 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div class="h-full bg-gradient-to-r from-accent-500 to-brand-500 transition-all duration-700" style="width:${qPct}%"></div>
+            </div>
+            <button data-view="quests" class="nav-top mt-3 text-xs font-semibold text-brand-600 dark:text-brand-400 hover:underline">Open Syllabus Quests →</button>
+          </div>
+
+        </div>
+      `;
+
+      bindNavTop();
+
+      bindDailyQuestCard();
+    }
+
+    function renderDailyQuestCard() {
+      const { remaining, remainingDays, dailyTarget } = calculateDailyTarget();
+      const quest = getDailyQuest();
+      const { completed, total, pct, isComplete } = getQuestProgress();
+      const statusMap = loadJSON(LS_KEYS.qStatus, {});
+
+      if (dailyTarget === 0 || remaining === 0) {
+        return `
+          <div class="rounded-2xl p-6 bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-700 text-white shadow-xl relative overflow-hidden">
+            <div class="absolute -right-8 -top-8 w-40 h-40 rounded-full bg-white/10 blur-xl"></div>
+            <div class="relative flex items-center gap-4">
+              <div class="text-4xl">🏆</div>
+              <div>
+                <h2 class="text-xl font-extrabold">All caught up!</h2>
+                <p class="opacity-90 text-sm mt-1">Every question is revised — you’re exam-ready. Take a breath, you earned it. 🎉</p>
+              </div>
+            </div>
+          </div>`;
+      }
+
+      const questQuestions = quest.questionIds
+        .map(qid => flatQuestions.find(q => q.id === qid))
+        .filter(Boolean);
+
+      const listHtml = questQuestions.map(q => {
+        const st = statusMap[q.id] || STATUS.TODO;
+        const isRevised = st === STATUS.REVISED;
+        const marksColor = q.marks >= 15
+          ? 'bg-rose-400/30 text-rose-100'
+          : q.marks >= 6
+            ? 'bg-amber-400/30 text-amber-100'
+            : q.marks >= 4
+              ? 'bg-sky-400/30 text-sky-100'
+              : 'bg-slate-300/30 text-slate-100';
+        return `
+          <div class="flex items-start gap-3 p-2.5 rounded-lg ${isRevised ? 'bg-white/10 opacity-60' : 'bg-white/15 hover:bg-white/25'} transition-colors">
+            <div class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-[10px] font-bold ${marksColor}">${q.marks}m</div>
+            <div class="flex-1 min-w-0">
+              <div class="text-[10px] uppercase tracking-wide opacity-70 font-mono">${q.subject} • ${q.paper}</div>
+              <div class="text-sm leading-snug ${isRevised ? 'line-through' : ''}">${escapeHtml(q.question)}</div>
+            </div>
+            ${isRevised
+              ? `<span class="shrink-0 text-xs font-semibold px-2 py-1 rounded bg-emerald-400/30 text-emerald-100">✓ Done</span>`
+              : `<button class="quest-mark-btn shrink-0 text-xs font-semibold px-2.5 py-1 rounded bg-white text-indigo-700 hover:bg-indigo-50 transition-colors shadow-sm" data-qid="${q.id}">Mark Revised</button>`
+            }
+          </div>`;
+      }).join('');
+
+      return `
+        <div class="rounded-2xl p-5 sm:p-6 bg-gradient-to-br from-indigo-600 via-purple-600 to-fuchsia-600 text-white shadow-xl border border-indigo-400/30 relative overflow-hidden">
+          <div class="absolute -right-10 -top-10 w-48 h-48 rounded-full bg-white/10 blur-2xl"></div>
+          <div class="absolute -left-10 -bottom-10 w-40 h-40 rounded-full bg-fuchsia-400/20 blur-2xl"></div>
+
+          <div class="relative">
+            <!-- Header row -->
+            <div class="flex items-start justify-between gap-3 flex-wrap">
+              <div class="flex items-center gap-3">
+                <div class="text-3xl">🎯</div>
+                <div>
+                  <h2 class="text-lg sm:text-xl font-extrabold tracking-tight">Today’s Daily Quest</h2>
+                  <p class="text-xs opacity-90 mt-0.5">
+                    ${isComplete
+                      ? `Quest complete — see you tomorrow! 🌙`
+                      : `Daily Goal: Complete <strong>${total}</strong> question${total !== 1 ? 's' : ''} today`}
+                  </p>
+                </div>
+              </div>
+              <div class="text-right text-[11px] opacity-90 leading-tight">
+                <div class="font-mono text-base font-bold">${remaining}</div>
+                <div class="uppercase tracking-wide opacity-80">questions left</div>
+                <div class="font-mono mt-1">${remainingDays}d</div>
+                <div class="uppercase tracking-wide opacity-80">until exam</div>
+              </div>
+            </div>
+
+            ${isComplete
+              ? `<div class="mt-5 p-5 rounded-xl bg-white/15 backdrop-blur-sm text-center">
+                  <div class="text-3xl mb-2">🎉</div>
+                  <p class="font-bold text-lg">Quest Complete! Great job.</p>
+                  <p class="text-sm opacity-90 mt-1.5 max-w-md mx-auto">Check back tomorrow for your next batch. Rest well — consistency beats cramming every single time.</p>
+                </div>`
+              : `
+
+                <div class="mt-5">
+                  <div class="flex items-center justify-between text-xs mb-1.5">
+                    <span class="font-semibold">Today’s Progress</span>
+                    <span class="font-mono opacity-90">${completed} / ${total}  •  ${pct}%</span>
+                  </div>
+                  <div class="h-2.5 rounded-full bg-white/20 overflow-hidden">
+                    <div class="h-full bg-gradient-to-r from-emerald-300 to-emerald-400 transition-all duration-500" style="width:${pct}%"></div>
+                  </div>
+                </div>
+
+                <p class="text-[11px] opacity-75 mt-2 italic">
+                  📐 ${remaining} unrevised ÷ ${remainingDays} days until exam = ${dailyTarget} questions/day (rounded up)
+                </p>
+
+                <div class="mt-4 space-y-1.5 max-h-80 overflow-y-auto scrollbar-thin pr-1">
+                  ${listHtml}
+                </div>
+              `
+            }
+          </div>
+        </div>`;
+    }
+
+    function bindDailyQuestCard() {
+      document.querySelectorAll('.quest-mark-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const qid = btn.dataset.qid;
+          setQuestionStatus(qid, STATUS.REVISED);
+
+          renderStatsView();
+
+          refreshSidebarTreeStatusIndicators();
+        });
+      });
+    }
+
+    function renderQuestsView() {
+      const main = document.getElementById('mainContent');
+
+      let qTotal = 0, qDone = 0;
+      syllabusQuestData.forEach(subj => subj.papers.forEach(p => p.topics.forEach((t, ti) => {
+        qTotal++;
+        if (getQuestDone(`quest_${subj.subject}_${p.paper}_${ti}`)) qDone++;
+      })));
+      const qPct = qTotal ? Math.round((qDone / qTotal) * 100) : 0;
+
+      const subjColor = {
+        "Pathology":     "rose",
+        "Microbiology":  "emerald",
+        "Pharmacology":  "brand"
+      };
+
+      main.innerHTML = `
+        <div class="space-y-5">
+          <div>
+            <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100">Syllabus Quest Tracker</h2>
+            <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">
+              Parsed from the university SY MBBS CBME curriculum circular.
+              Tick off each topic as you complete it — progress saves to your browser.
+            </p>
+          </div>
+
+          <div class="rounded-xl p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-200">Overall Syllabus Coverage</h3>
+              <span class="text-xs font-mono text-slate-500 dark:text-slate-400">${qDone} / ${qTotal}  •  ${qPct}%</span>
+            </div>
+            <div class="h-3 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div class="h-full bg-gradient-to-r from-accent-500 to-brand-500 transition-all duration-700" style="width:${qPct}%"></div>
+            </div>
+          </div>
+
+          ${syllabusQuestData.map(subj => {
+            const color = subjColor[subj.subject] || 'slate';
+            let subjTotal = 0, subjDone = 0;
+            subj.papers.forEach(p => p.topics.forEach((t, ti) => {
+              subjTotal++;
+              if (getQuestDone(`quest_${subj.subject}_${p.paper}_${ti}`)) subjDone++;
+            }));
+            const subjPct = subjTotal ? Math.round((subjDone/subjTotal)*100) : 0;
+
+            return `
+              <div class="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm bg-white dark:bg-slate-900">
+                <div class="px-4 py-3 bg-gradient-to-r ${color === 'brand' ? 'from-brand-500 to-indigo-600' : color === 'rose' ? 'from-rose-500 to-pink-600' : 'from-emerald-500 to-teal-600'} text-white">
+                  <div class="flex items-center justify-between">
+                    <h3 class="font-bold text-sm">${subj.subject}</h3>
+                    <span class="text-xs font-mono opacity-90">${subjDone}/${subjTotal} • ${subjPct}%</span>
+                  </div>
+                  <div class="h-1.5 rounded-full bg-white/20 mt-2 overflow-hidden">
+                    <div class="h-full bg-white transition-all duration-700" style="width:${subjPct}%"></div>
+                  </div>
+                </div>
+                ${subj.papers.map(p => {
+                  let pTotal = 0, pDone = 0;
+                  p.topics.forEach((t, ti) => {
+                    pTotal++;
+                    if (getQuestDone(`quest_${subj.subject}_${p.paper}_${ti}`)) pDone++;
+                  });
+                  return `
+                    <div class="border-t border-slate-200 dark:border-slate-800">
+                      <div class="px-4 py-2 bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between">
+                        <span class="text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wide">${p.paper}</span>
+                        <span class="text-[10px] font-mono text-slate-400">${pDone}/${pTotal}</span>
+                      </div>
+                      <ul class="divide-y divide-slate-100 dark:divide-slate-800">
+                        ${p.topics.map((t, ti) => {
+                          const id = `quest_${subj.subject}_${p.paper}_${ti}`;
+                          const done = getQuestDone(id);
+                          return `
+                            <li class="flex items-start gap-3 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                              <label class="flex items-start gap-3 cursor-pointer flex-1">
+                                <input type="checkbox" data-quest-id="${id}" ${done ? 'checked' : ''}
+                                       class="mt-0.5 w-4 h-4 rounded text-brand-600 focus:ring-brand-500 border-slate-300 dark:border-slate-600 dark:bg-slate-800">
+                                <span class="text-sm ${done ? 'line-through text-slate-400 dark:text-slate-500' : 'text-slate-700 dark:text-slate-200'}">${t}</span>
+                              </label>
+                            </li>`;
+                        }).join('')}
+                      </ul>
+                    </div>`;
+                }).join('')}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+
+      main.querySelectorAll('input[data-quest-id]').forEach(cb => {
+        cb.addEventListener('change', e => {
+          const id = e.target.dataset.questId;
+          setQuestDone(id, e.target.checked);
+
+          renderQuestsView();
+        });
+      });
+    }
+
+    let currentSearchQuery = "";
+    function renderAllQuestionsView(filterFn) {
+      const main = document.getElementById('mainContent');
+
+      let list = flatQuestions;
+      if (filterFn) list = flatQuestions.filter(filterFn);
+      else if (currentSearchQuery && _lastSearchIds) {
+        // worker already returned a ranked id list — just resolve them
+        var idSet = new Set(_lastSearchIds);
+        list = flatQuestions.filter(function(q){ return idSet.has(q.id); });
+      }
+
+      const statusMap = loadJSON(LS_KEYS.qStatus, {});
+
+      main.innerHTML = `
+        <div class="space-y-4">
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <h2 class="text-xl font-bold text-slate-800 dark:text-slate-100">
+              ${filterFn ? 'Filtered Questions' : 'All Questions'}
+              <span class="text-sm font-normal text-slate-500 dark:text-slate-400">(${list.length})</span>
+            </h2>
+            ${filterFn ? `<button data-view="all-questions" class="nav-top text-xs text-brand-600 dark:text-brand-400 hover:underline">← back to all</button>` : ''}
+          </div>
+          <div class="space-y-2">
+            ${list.length === 0
+              ? `<div class="text-center py-16 text-slate-400 dark:text-slate-500">
+                  <div class="text-4xl mb-2">🔍</div>
+                  <p class="text-sm">No questions match your search.</p>
+                </div>`
+              : list.map(q => {
+                const st = statusMap[q.id] || STATUS.TODO;
+                return `
+                <button data-qid="${q.id}"
+                        aria-label="${escapeHtml(q.question).replace(/"/g, '&quot;')} — ${q.marks} marks, ${st}"
+                        class="q-card w-full text-left rounded-lg p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-brand-400 dark:hover:border-brand-500 hover:shadow-sm transition-all">
+                  <div class="flex items-start gap-3">
+                    <div class="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold
+                                ${q.marks >= 15 ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300'
+                                  : q.marks >= 6 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                                  : q.marks >= 4 ? 'bg-brand-100 text-brand-700 dark:bg-brand-900/30 dark:text-brand-300'
+                                  : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}">
+                      ${q.marks || '?'}m
+                    </div>
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-2 flex-wrap mb-1">
+                        <span class="text-[10px] font-mono uppercase tracking-wide text-slate-500 dark:text-slate-400">${q.subject} • ${q.paper}</span>
+                        <span class="text-[10px] text-slate-400 dark:text-slate-500">${q.section}</span>
+                        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium ${STATUS_COLORS[st]}">${st}</span>
+                      </div>
+                      <div class="text-sm text-slate-700 dark:text-slate-200 line-clamp-2">${escapeHtml(q.question)}</div>
+                    </div>
+                    <svg class="w-4 h-4 text-slate-400 shrink-0 mt-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
+                  </div>
+                </button>`;
+              }).join('')}
+          </div>
+        </div>
+      `;
+
+      main.querySelectorAll('.q-card').forEach(card => {
+        card.addEventListener('click', () => {
+          const qid = card.dataset.qid;
+          const q = flatQuestions.find(x => x.id === qid);
+          if (q) renderQuestionDetail(q);
+        });
+      });
+      bindNavTop();
+    }
+
+    function renderQuestionDetail(q) {
+      const main = document.getElementById('mainContent');
+      const status = getQuestionStatus(q.id);
+      const isPending = q.answer === "Answer pending generation. Click here to generate.";
+
+      main.innerHTML = `
+        <div class="space-y-4 max-w-3xl mx-auto">
+
+          <!-- Back -->
+          <button id="backBtn" class="no-print text-xs text-slate-500 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+            </svg>
+            Back
+          </button>
+
+          <!-- Question card -->
+          <div class="answer-card rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+
+            <!-- Question header -->
+            <div class="px-5 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
+              <div class="flex items-center gap-2 flex-wrap mb-2 text-[10px] uppercase tracking-wide font-mono text-slate-500 dark:text-slate-400">
+                <span>${q.subject}</span><span>›</span>
+                <span>${q.paper}</span><span>›</span>
+                <span>${q.section}</span>
+                <span class="ml-auto px-2 py-0.5 rounded-full bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-300 font-semibold">${q.marks} marks</span>
+              </div>
+              <h2 class="text-lg font-bold text-slate-800 dark:text-slate-100 leading-snug">${escapeHtml(q.question)}</h2>
+
+              <!-- Status toggle + print -->
+              <div class="no-print flex items-center gap-2 mt-3 flex-wrap">
+                <span class="text-[11px] text-slate-500 dark:text-slate-400 font-medium">Status:</span>
+                <div class="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden text-[11px]">
+                  ${Object.values(STATUS).map(s => `
+                    <button data-status="${s}"
+                            class="status-btn px-2.5 py-1 font-medium transition-colors
+                                   ${status === s
+                                     ? (s === STATUS.TODO ? 'bg-slate-600 text-white'
+                                        : s === STATUS.IN_PROGRESS ? 'bg-amber-500 text-white'
+                                        : 'bg-emerald-600 text-white')
+                                     : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}">
+                      ${s}
+                    </button>
+                  `).join('')}
+                </div>
+                <button id="printBtn" class="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white transition-colors">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
+                  </svg>
+                  Print / Save as PDF
+                </button>
+              </div>
+            </div>
+
+            <!-- Answer body -->
+            <div class="px-5 py-5">
+              ${isPending
+                ? `<div class="text-center py-10">
+                     <div class="text-5xl mb-3">📝</div>
+                     <p class="text-slate-600 dark:text-slate-300 font-medium">Answer pending generation.</p>
+                     <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
+                       Full answer for this question is not yet authored. See <code class="text-xs">CONTRIBUTING.md</code> for how to add it.
+                     </p>
+                     <button id="simulateGenBtn" class="mt-4 text-xs font-semibold px-3 py-1.5 rounded-lg bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-300 hover:bg-brand-200 dark:hover:bg-brand-900/60 transition-colors">
+                       Click here to generate
+                     </button>
+                   </div>`
+                : `<div class="answer-body text-sm leading-relaxed text-slate-700 dark:text-slate-200">${sanitiseAnswerHTML(q.answer)}</div>`
+              }
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.getElementById('backBtn').addEventListener('click', () => {
+        const last = loadJSON(LS_KEYS.lastView, { view: 'stats' });
+        navigateTo(last.view || 'stats');
+      });
+
+      main.querySelectorAll('.status-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          setQuestionStatus(q.id, btn.dataset.status);
+          renderQuestionDetail(q);
+          refreshSidebarTreeStatusIndicators();
+        });
+      });
+
+      document.getElementById('printBtn').addEventListener('click', () => window.print());
+
+      const simBtn = document.getElementById('simulateGenBtn');
+      if (simBtn) {
+        simBtn.addEventListener('click', () => {
+          simBtn.textContent = "Generating… (open CONTRIBUTING.md to add this answer)";
+          simBtn.disabled = true;
+        });
+      }
+
+      if (!isPending) {
+        // lazy-render diagrams + images via IntersectionObserver instead
+        // of running mermaid.run() over every diagram on the page at once.
+        // this is a huge win on long answers with multiple flowcharts.
+        observeLazyContent(main);
+      }
+    }
+
+    function navigateTo(view) {
+      saveJSON(LS_KEYS.lastView, { view });
+
+      document.querySelectorAll('.nav-top').forEach(b => {
+        if (b.dataset.view === view) {
+          b.classList.add('bg-brand-100','dark:bg-brand-900/40','text-brand-700','dark:text-brand-300');
+        } else {
+          b.classList.remove('bg-brand-100','dark:bg-brand-900/40','text-brand-700','dark:text-brand-300');
+        }
+      });
+      if (view === 'stats') renderStatsView();
+      else if (view === 'quests') renderQuestsView();
+      else if (view === 'all-questions') renderAllQuestionsView();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function bindNavTop() {
+      document.querySelectorAll('.nav-top').forEach(btn => {
+
+        const newBtn = btn.cloneNode(true);
+        btn.replaceWith(newBtn);
+      });
+      document.querySelectorAll('.nav-top').forEach(btn => {
+        btn.addEventListener('click', () => navigateTo(btn.dataset.view));
+      });
+    }
+
+    function handleSearch(e){
+      currentSearchQuery = e.target.value.trim();
+      var countEl = document.getElementById('searchResultsCount');
+      var input = e.target;
+      if (!currentSearchQuery) {
+        countEl.classList.add('hidden');
+        countEl.textContent = '';
+        input.setAttribute('aria-expanded', 'false');
+        // user cleared the box — bounce back to wherever they were
+        var last = loadJSON(LS_KEYS.lastView, { view: 'stats' });
+        if (last.view === 'all-questions') renderAllQuestionsView();
+        return;
+      }
+      input.setAttribute('aria-expanded', 'true');
+      // ask the worker for matches; update the count + re-render when they arrive.
+      // the worker is single-threaded w.r.t. its own queue, so rapid typing
+      // collapses to the last query — we just overwrite searchCallback each time.
+      searchQuestions(currentSearchQuery, function(ids, query, tookMs){
+        // a late result from an earlier query can race with a newer one — guard.
+        if (query !== currentSearchQuery) return;
+        countEl.textContent = ids.length + ' match' + (ids.length === 1 ? '' : 'es');
+        countEl.classList.remove('hidden');
+        // stash the id list so renderAllQuestionsView can use it without re-querying
+        _lastSearchIds = ids;
+        navigateTo('all-questions');
+        renderAllQuestionsView();
+      });
+    }
+    var _lastSearchIds = null;
+
+    function openSidebar(){
+      document.getElementById('sidebar').classList.remove('-translate-x-full');
+      document.getElementById('sidebarOverlay').classList.remove('hidden');
+    }
+
+    function closeSidebar(){
+      // only auto-close on small screens, on desktop the sidebar is always visible
+      if (window.innerWidth < 1024) {
+        document.getElementById('sidebar').classList.add('-translate-x-full');
+        document.getElementById('sidebarOverlay').classList.add('hidden');
+      }
+    }
+
+    function refreshSidebarTreeStatusIndicators(){
+      // nuke + rebuild — heavy-handed but the tree is small so it's fine.
+      // revisit if we ever profile this and it shows up hot.
+      var tree = document.getElementById('sidebarTree');
+      tree.innerHTML = '';
+      buildSidebarTree();
+    }
+
+    // quick+dirty HTML escaper — we only use it for search highlighting
+    function escapeHtml(str){
+      var div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function measureHeader(){
+      // snapshot header height into --header-h so the sidebar's sticky offset
+      // and the main content's min-height track it. re-runs on resize so
+      // mobile URL bar show/hide doesn't break the layout.
+      var hdr = document.querySelector('header');
+      if (hdr) document.documentElement.style.setProperty('--header-h', hdr.offsetHeight + 'px');
+    }
+
+    function init(){
+      //console.log('[medrev] init called');  // debug — leave for now, useful
+      measureHeader();
+      window.addEventListener('resize', measureHeader);
+
+      // start the data fetch ASAP — render waits for it to resolve.
+      var dataP = loadData();
+
+      // wire up the chrome that doesn't depend on question data right away.
+      bindNavTop();
+      document.getElementById('globalSearch').addEventListener('input', handleSearch);
+
+      document.getElementById('darkModeToggle').addEventListener('click', function(){
+        var isDark = document.documentElement.classList.toggle('dark');
+        saveJSON(LS_KEYS.theme, isDark ? 'dark' : 'light');
+
+        // re-render only the visible mermaid diagrams — cheaper than re-running
+        // the whole batch, and avoids a flash on long answer pages.
+        var mermaidDivs = document.querySelectorAll('.mermaid[data-mermaid-rendered="1"]');
+        if (mermaidDivs.length && window.mermaid) {
+          try {
+            mermaid.initialize({ startOnLoad:false, theme: isDark ? 'dark' : 'default', securityLevel:'loose' });
+            mermaidDivs.forEach(function(n){ n.removeAttribute('data-processed'); n.innerHTML = n.textContent; });
+            mermaid.run({ nodes: mermaidDivs });
+          } catch(e) { /* mermaid not loaded yet, ignore */ }
+        }
+      });
+
+      document.getElementById('sidebarToggle').addEventListener('click', openSidebar);
+      document.getElementById('sidebarOverlay').addEventListener('click', closeSidebar);
+
+      renderExamCountdown();
+      setInterval(renderExamCountdown, 1000);  // tick every second
+
+      // wait for the data to land before rendering anything that needs it.
+      dataP.then(function(){
+        buildSidebarTree();
+        setupObservers();
+        var last = loadJSON(LS_KEYS.lastView, { view: 'stats' });
+        navigateTo(last.view || 'stats');
+      }).catch(function(){
+        // error UI is already shown by loadData(); nothing else to do here.
+      });
+    }
+
+    // bootstrap — DOMContentLoaded if document still loading, else just go.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  </script>
+</body>
+</html>
